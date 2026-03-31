@@ -13,7 +13,7 @@
         
         /* 이름 및 V 표시 스타일 */
         .name-label { font-size: 1.2em; font-weight: bold; display: flex; align-items: center; gap: 10px; margin-bottom: 5px; }
-        .v-mark { color: #4CAF50; font-size: 1.5em; display: none; } /* 준비 완료 시 나타남 */
+        .v-mark { color: #4CAF50; font-size: 1.5em; display: none; }
 
         .grid { 
             width: 100%; height: 200px; background: white; border: 2px solid #333; 
@@ -58,7 +58,7 @@
             </div>
             
             <div class="name-label">
-                나: <span id="my-name-display">-</span> <span id="my-v" class="v-mark">V</span>
+                나: <span id="my-name-display">-</span> (블록 <span id="block-count">0</span>/10) <span id="my-v" class="v-mark">V</span>
             </div>
             <div id="my-grid" class="grid"></div>
         </div>
@@ -86,19 +86,16 @@
     <script>
         const socket = io();
         let myName = "", myRoom = "", myBlocks = []; 
-        let isPlacingStage = false; // 배치 단계 여부
         let isMyTurn = false;
-        let gameStatus = "LOBBY"; // LOBBY, PLACING, PLAYING
+        let gameStatus = "LOBBY"; 
 
         function joinGame() {
             myName = document.getElementById('name-input').value;
             myRoom = document.getElementById('room-input').value;
-            if(!myName || !myRoom) return alert("이름과 방 번호를 입력하세요!");
-            
+            if(!myName || !myRoom) return alert("입력 정보 부족!");
             document.getElementById('my-name-display').innerText = myName;
             document.getElementById('login-screen').style.display = 'none';
             document.getElementById('main-game').style.display = 'flex';
-            
             socket.emit('joinRoom', { roomCode: myRoom, name: myName });
             initGrids();
         }
@@ -121,17 +118,27 @@
                     if (gameStatus !== 'PLACING') return; 
                     if (myBlocks.includes(i)) {
                         myBlocks = myBlocks.filter(b => b !== i);
-                        this.classList.remove('my-block');
-                    } else {
+                    } else if (myBlocks.length < 10) {
                         myBlocks.push(i);
-                        this.classList.add('my-block');
+                    } else {
+                        return alert("블록은 최대 10개까지 설치 가능합니다!");
                     }
+                    renderMyBlocks(); // 내 블록 화면 갱신
                 };
                 myGrid.appendChild(myCell);
             }
         }
 
-        // 버튼 클릭 통합 제어
+        // [추가] 내 블록들만 다시 그려주는 함수
+        function renderMyBlocks() {
+            const myGrid = document.getElementById('my-grid');
+            document.getElementById('block-count').innerText = myBlocks.length;
+            for(let i=0; i<200; i++) {
+                myGrid.children[i].classList.remove('my-block');
+                if (myBlocks.includes(i)) myGrid.children[i].classList.add('my-block');
+            }
+        }
+
         function handleButtonClick() {
             const btn = document.getElementById('start-btn');
             if (btn.innerText === "준비하기" || btn.innerText === "준비 취소") {
@@ -139,23 +146,21 @@
             } else if (btn.innerText === "게임 시작하기!") {
                 socket.emit('startGame');
             } else if (btn.innerText === "배치 완료") {
-                if (myBlocks.length === 0) return alert("블록을 설치해주세요!");
+                if (myBlocks.length < 10) return alert("블록 10개를 모두 설치해주세요!");
                 btn.disabled = true;
                 btn.innerText = "상대방 대기 중...";
                 socket.emit('finishPlacing', myBlocks);
+            } else if (btn.innerText === "다시하기 (로비로)") {
+                socket.emit('requestRematch');
             }
         }
 
-        // 방 정보 업데이트 (이름 및 V 표시)
         socket.on('roomData', data => {
             const me = data.players.find(p => p.id === socket.id);
             const opp = data.players.find(p => p.id !== socket.id);
             const btn = document.getElementById('start-btn');
 
-            // 내 상태 업데이트
             document.getElementById('my-v').style.display = (me && me.isReady) ? 'inline' : 'none';
-            
-            // 상대 상태 업데이트
             if (opp) {
                 document.getElementById('opp-name').innerText = opp.name;
                 document.getElementById('opp-v').style.display = opp.isReady ? 'inline' : 'none';
@@ -164,8 +169,9 @@
                 document.getElementById('opp-v').style.display = 'none';
             }
 
-            // 로비 단계일 때 버튼 텍스트 제어
             if (data.gameState === 'LOBBY') {
+                gameStatus = "LOBBY";
+                btn.disabled = false;
                 if (data.players.length === 2 && data.players.every(p => p.isReady)) {
                     btn.innerText = "게임 시작하기!";
                     btn.style.background = "#FF9800";
@@ -174,19 +180,16 @@
                     btn.style.background = "#2196F3";
                 }
             }
-
             document.getElementById('player-list').innerText = "플레이어: " + data.players.map(p => p.name).join(', ');
             document.getElementById('spectator-list').innerText = "관전자: " + data.spectators.map(s => s.name).join(', ');
         });
 
-        // 배치 단계 시작
         socket.on('startPlacing', () => {
             gameStatus = "PLACING";
             const btn = document.getElementById('start-btn');
             btn.innerText = "배치 완료";
             btn.style.background = "#4CAF50";
             btn.disabled = false;
-            addGameLog("[알림] 블록을 배치하고 '배치 완료'를 누르세요.");
         });
 
         socket.on('gameStart', data => {
@@ -194,39 +197,44 @@
             updateTurn(data.turn);
         });
 
+        // [중요] 5프레이즈 이동 시 내 화면에 블록 위치 동기화
+        socket.on('updateMyBlocks', newBlocks => {
+            myBlocks = newBlocks;
+            renderMyBlocks();
+        });
+
         socket.on('attackResult', data => {
             const isAttacker = (data.attacker === socket.id);
             const targetGrid = isAttacker ? document.getElementById('opponent-grid') : document.getElementById('my-grid');
             const cell = targetGrid.children[data.index];
-
-            if (data.hit) {
-                cell.classList.add('hit');
-            } else {
-                cell.classList.add('miss');
-                updateTurn(data.nextTurn);
-            }
+            if (data.hit) { cell.classList.add('hit'); }
+            else { cell.classList.add('miss'); updateTurn(data.nextTurn); }
             addGameLog(`${isAttacker ? "나의" : "상대의"} 공격: ${data.index}번 ${data.hit ? "적중!" : "불발"}`);
         });
 
         function updateTurn(currentTurnId) {
             isMyTurn = (socket.id === currentTurnId);
             const btn = document.getElementById('start-btn');
-            const oppGrid = document.getElementById('opponent-grid');
-
-            if (isMyTurn) {
-                btn.innerText = "🔥 나의 턴";
-                btn.style.background = "#ff5252";
-                oppGrid.classList.add('my-turn-border');
-            } else {
-                btn.innerText = "⏳ 상대 턴";
-                btn.style.background = "#333";
-                oppGrid.classList.remove('my-turn-border');
-            }
+            btn.innerText = isMyTurn ? "🔥 나의 턴" : "⏳ 상대 턴";
+            btn.style.background = isMyTurn ? "#ff5252" : "#333";
+            document.getElementById('opponent-grid').className = isMyTurn ? "grid my-turn-border" : "grid";
         }
 
         socket.on('gameOver', data => {
+            gameStatus = "ENDED";
             alert(`게임 종료!! 승자: ${data.winner}`);
-            location.reload();
+            const btn = document.getElementById('start-btn');
+            btn.disabled = false;
+            btn.innerText = "다시하기 (로비로)";
+            btn.style.background = "#9c27b0";
+        });
+
+        // [신규] 리매치 시작 시 화면 초기화
+        socket.on('rematchStarted', () => {
+            myBlocks = [];
+            document.getElementById('block-count').innerText = "0";
+            initGrids();
+            addGameLog("[알림] 게임이 초기화되었습니다.");
         });
 
         function changeRole(role) { socket.emit('changeRole', role); }
@@ -241,21 +249,12 @@
             log.innerHTML += `<div>${msg}</div>`;
             log.scrollTop = log.scrollHeight;
         }
-
         socket.on('receiveChat', data => {
             const log = document.getElementById('chat-log');
             log.innerHTML += `<div><strong>${data.name}:</strong> ${data.msg}</div>`;
             log.scrollTop = log.scrollHeight;
         });
-
-        socket.on('systemMsg', msg => {
-            addGameLog(`[시스템] ${msg}`);
-            if (msg.includes("이동했습니다")) refreshMyBlocksDisplay();
-        });
-
-        function refreshMyBlocksDisplay() {
-            // 필요 시 서버에서 이동된 좌표를 다시 받아와서 갱신하는 로직 추가 가능
-        }
+        socket.on('systemMsg', msg => { addGameLog(`[시스템] ${msg}`); });
     </script>
 </body>
 </html>
