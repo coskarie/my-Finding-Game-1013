@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>블록 찾기: 전술 기동 온라인</title>
     <style>
+        /* [UI 최적화] 모든 스타일 속성을 하나도 빠짐없이 명시적으로 선언 */
         body { font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; margin: 0; background: #f0f0f0; overflow: hidden; }
         #login-screen { position: fixed; inset: 0; background: white; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000; }
         #main-game { display: none; flex: 1; padding: 10px; gap: 15px; overflow-y: auto; }
@@ -21,12 +22,14 @@
         }
         .grid div { border: 0.1px solid #555; cursor: pointer; box-sizing: border-box; }
         
+        /* 블록 상태별 색상 */
         .my-unit { background: #2ecc71 !important; border: 1px solid #27ae60 !important; }
         .hit-unit { background: #e74c3c !important; border: 1px solid #c0392b !important; }
         .miss-cell { background: #95a5a6 !important; }
         .ghost { background: rgba(46, 204, 113, 0.4); pointer-events: none; }
         .ghost-invalid { background: rgba(231, 76, 60, 0.4); }
 
+        /* 인벤토리 */
         .inventory { display: flex; gap: 5px; flex-wrap: wrap; background: #ddd; padding: 8px; border-radius: 5px; margin-bottom: 5px; min-height: 45px; }
         .unit-btn { padding: 6px 10px; border: 1px solid #333; cursor: pointer; background: white; font-weight: bold; font-size: 0.85em; }
         .unit-btn.active { background: #3498db; color: white; border-color: #2980b9; }
@@ -131,7 +134,7 @@
                 const oCell = document.createElement('div');
                 oCell.onclick = function() { 
                     if(gameStatus === 'PLAYING' && isMyTurn) socket.emit('attack', i); 
-                    else if(!isMyTurn) addGameLog("[차단] 지금은 내 턴이 아닙니다.");
+                    else if(gameStatus === 'PLAYING' && !isMyTurn) addGameLog("[차단] 지금은 내 턴이 아닙니다.");
                 };
                 oppGrid.appendChild(oCell);
                 
@@ -175,11 +178,13 @@
         }
 
         function placeOrPickUnit(idx) {
+            // [디버그] 클릭 시 로그 출력
             if(gameStatus !== 'PLACING' && gameStatus !== 'MOVING') {
-                addGameLog("[차단] 지금은 배치 단계가 아님 (상태: " + gameStatus + ")");
+                addGameLog("[차단] 지금은 배치 단계가 아님 (현재 상태: " + gameStatus + ")");
                 return;
             }
 
+            // 수거 로직
             const unitIdx = myUnits.findIndex(u => u.cells.includes(idx));
             if (unitIdx !== -1) {
                 const unit = myUnits[unitIdx];
@@ -188,22 +193,26 @@
                 selectedUnitType = unit.type;
                 inventory[unit.type]++;
                 renderInventory(); renderMyGrid();
+                addGameLog("[알림] 유닛 수거됨: " + unit.type);
                 return;
             }
 
+            // 배치 로직
             if(!selectedUnitType) {
-                addGameLog("[알림] 먼저 유닛 모양을 선택하세요!");
+                addGameLog("[알림] 먼저 배치할 유닛 모양을 선택하세요!");
                 return;
             }
+            if(inventory[selectedUnitType] <= 0) return;
 
             const cells = getRotatedCells(selectedUnitType, idx, currentRotation);
             if(cells.includes(-1) || cells.some(c => myUnits.some(u => u.cells.includes(c)))) {
-                addGameLog("[차단] 격자 밖이거나 겹칩니다.");
+                addGameLog("[차단] 격자 밖이거나 다른 유닛과 겹칩니다.");
                 return;
             }
 
             myUnits.push({ type: selectedUnitType, cells: cells, isHit: false });
             inventory[selectedUnitType]--;
+            
             // [UX 개선] 연속 배치를 위해 재고가 있을 땐 선택 해제 안 함
             if(inventory[selectedUnitType] <= 0) selectedUnitType = null;
             
@@ -232,10 +241,18 @@
             const cells = getRotatedCells(selectedUnitType, idx, currentRotation);
             const myG = document.getElementById('my-grid');
             const invalid = cells.includes(-1) || cells.some(c => myUnits.some(u => u.cells.includes(c)));
-            cells.forEach(c => { if(c !== -1) myG.children[c].classList.add('ghost', invalid ? 'ghost-invalid' : 'null'); });
+            cells.forEach(c => { 
+                if(c !== -1) {
+                    myG.children[c].classList.add('ghost');
+                    if(invalid) myG.children[c].classList.add('ghost-invalid');
+                }
+            });
         }
 
-        function clearGhost() { document.querySelectorAll('.ghost').forEach(g => g.classList.remove('ghost', 'ghost-invalid')); }
+        function clearGhost() { 
+            const ghosts = document.querySelectorAll('.ghost');
+            ghosts.forEach(g => g.classList.remove('ghost', 'ghost-invalid')); 
+        }
 
         function renderInventory() {
             const inv = document.getElementById('unit-inventory');
@@ -245,7 +262,11 @@
                     const btn = document.createElement('button');
                     btn.className = 'unit-btn' + (selectedUnitType === type ? ' active' : '');
                     btn.innerText = `${type}(${inventory[type]})`;
-                    btn.onclick = function() { selectedUnitType = type; renderInventory(); };
+                    btn.onclick = function() { 
+                        selectedUnitType = type; 
+                        renderInventory(); 
+                        addGameLog("[선택] 배치 유닛: " + type);
+                    };
                     inv.appendChild(btn);
                 }
             }
@@ -256,7 +277,7 @@
             myUnits.forEach(u => { if(!u.isHit) inventory[u.type]++; });
             myUnits = myUnits.filter(u => u.isHit);
             renderInventory(); renderMyGrid();
-            addGameLog("[알림] 배치 초기화");
+            addGameLog("[알림] 배치 초기화 완료");
         }
 
         function handleButtonClick() {
@@ -281,6 +302,9 @@
             const opp = data.players.find(p => p.id !== socket.id);
             const btn = document.getElementById('start-btn');
 
+            // [상태 동기화] 서버의 게임 상태와 클라이언트 변수 일치 시킴 (새로고침/지연 대응)
+            gameStatus = data.gameState;
+
             document.getElementById('my-v').style.display = (me && me.isReady) ? 'inline' : 'none';
             if (opp) {
                 document.getElementById('opp-name').innerText = opp.name;
@@ -291,13 +315,15 @@
             }
 
             if (data.gameState === 'LOBBY') {
-                gameStatus = "LOBBY"; btn.disabled = false;
+                btn.disabled = false;
                 if (data.players.length === 2 && data.players.every(p => p.isReady)) {
                     btn.innerText = "게임 시작하기!"; btn.style.background = "#FF9800";
                 } else {
                     btn.innerText = (me && me.isReady) ? "준비 취소" : "준비하기"; btn.style.background = "#4CAF50";
                 }
             }
+            
+            // [버그해결] 명단 업데이트 로직 명시
             document.getElementById('player-list').innerText = "플레이어: " + data.players.map(p => p.name).join(', ');
             document.getElementById('spectator-list').innerText = "관전자: " + data.spectators.map(s => s.name).join(', ');
         });
