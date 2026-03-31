@@ -38,7 +38,7 @@ io.on('connection', (socket) => {
         io.to(roomCode).emit('systemMsg', `${userName}님이 입장하셨습니다.`);
     });
 
-    // 2. 역할 변경 (준비 상태 초기화 로직 추가)
+    // 2. 역할 변경
     socket.on('changeRole', (role) => {
         if (!currentRoom) return;
         const room = rooms[currentRoom];
@@ -49,7 +49,6 @@ io.on('connection', (socket) => {
 
         if (role === 'player') {
             if (room.players.length < 2) {
-                // isReady: false (V 표시 없음), placed: false (배치 전)
                 room.players.push({ id: socket.id, name: userName, isReady: false, blocks: [], foundBlocks: [], placed: false });
             } else {
                 socket.emit('systemMsg', '플레이어 자리가 꽉 찼습니다.');
@@ -61,26 +60,26 @@ io.on('connection', (socket) => {
         updateRoomInfo(currentRoom);
     });
 
-    // 3. [신규] 준비 완료 버튼 토글 (V 표시용)
+    // 3. 준비 완료 버튼 토글 (V 표시)
     socket.on('toggleReady', () => {
         const room = rooms[currentRoom];
         if (!room || room.gameState !== 'LOBBY') return;
         
         const player = room.players.find(p => p.id === socket.id);
         if (player) {
-            player.isReady = !player.isReady; // V 표시 켰다 껐다
+            player.isReady = !player.isReady;
             updateRoomInfo(currentRoom);
         }
     });
 
-    // 4. [신규] 게임 시작 버튼 (둘 다 V일 때만 작동)
+    // 4. 게임 시작 버튼 (둘 다 V일 때만)
     socket.on('startGame', () => {
         const room = rooms[currentRoom];
         if (!room) return;
         
         if (room.players.length === 2 && room.players.every(p => p.isReady)) {
-            room.gameState = 'PLACING'; // 배치 단계로 전환
-            io.to(currentRoom).emit('startPlacing'); // 클라이언트에 배치 시작 알림
+            room.gameState = 'PLACING';
+            io.to(currentRoom).emit('startPlacing');
             updateRoomInfo(currentRoom);
         }
     });
@@ -92,10 +91,9 @@ io.on('connection', (socket) => {
         const player = room.players.find(p => p.id === socket.id);
         if (player) {
             player.blocks = blocks; 
-            player.placed = true; // 배치를 마침
+            player.placed = true;
         }
 
-        // 둘 다 배치를 마쳤으면 진짜 게임(공격) 시작
         if (room.players.length === 2 && room.players.every(p => p.placed)) {
             room.gameState = 'PLAYING';
             const turnIndex = Math.floor(Math.random() * 2);
@@ -134,11 +132,37 @@ io.on('connection', (socket) => {
             room.phraseCount++;
             io.to(currentRoom).emit('attackResult', { attacker: socket.id, index, hit: false, nextTurn: room.turn });
 
+            // 5프레이즈 도달 시 이동 및 내 화면 갱신 데이터 전송
             if (room.phraseCount > 0 && room.phraseCount % 5 === 0) {
                 moveUnfoundBlocks(room);
                 io.to(currentRoom).emit('systemMsg', "⚠️ 5프레이즈 도달! 발견되지 않은 블록들이 이동했습니다!");
+                
+                // [추가] 플레이어 각자에게 이동된 "자신의" 블록 위치를 알려줌
+                room.players.forEach(player => {
+                    io.to(player.id).emit('updateMyBlocks', player.blocks);
+                });
             }
         }
+    });
+
+    // 7. [신규] 다시하기 (방 초기화) 로직
+    socket.on('requestRematch', () => {
+        const room = rooms[currentRoom];
+        if (!room || room.gameState !== 'ENDED') return;
+
+        // 방 데이터 초기화
+        room.gameState = 'LOBBY';
+        room.phraseCount = 0;
+        room.players.forEach(p => {
+            p.isReady = false;
+            p.blocks = [];
+            p.foundBlocks = [];
+            p.placed = false;
+        });
+
+        io.to(currentRoom).emit('rematchStarted'); // 클라이언트에 초기화 신호 전송
+        updateRoomInfo(currentRoom);
+        io.to(currentRoom).emit('systemMsg', "방이 초기화되었습니다. 다시 준비해주세요!");
     });
 
     // 블록 이동 함수
