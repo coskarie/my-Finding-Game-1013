@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>블록 찾기: 전술 기동 온라인</title>
     <style>
-        /* [UI 최적화] 모든 스타일 속성을 하나도 빠짐없이 명시적으로 선언 */
         body { font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; margin: 0; background: #f0f0f0; overflow: hidden; }
         #login-screen { position: fixed; inset: 0; background: white; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000; }
         #main-game { display: none; flex: 1; padding: 10px; gap: 15px; overflow-y: auto; }
@@ -22,14 +21,12 @@
         }
         .grid div { border: 0.1px solid #555; cursor: pointer; box-sizing: border-box; }
         
-        /* 블록 상태별 색상 */
         .my-unit { background: #2ecc71 !important; border: 1px solid #27ae60 !important; }
         .hit-unit { background: #e74c3c !important; border: 1px solid #c0392b !important; }
         .miss-cell { background: #95a5a6 !important; }
         .ghost { background: rgba(46, 204, 113, 0.4); pointer-events: none; }
         .ghost-invalid { background: rgba(231, 76, 60, 0.4); }
 
-        /* 인벤토리 */
         .inventory { display: flex; gap: 5px; flex-wrap: wrap; background: #ddd; padding: 8px; border-radius: 5px; margin-bottom: 5px; min-height: 45px; }
         .unit-btn { padding: 6px 10px; border: 1px solid #333; cursor: pointer; background: white; font-weight: bold; font-size: 0.85em; }
         .unit-btn.active { background: #3498db; color: white; border-color: #2980b9; }
@@ -150,29 +147,39 @@
             addGameLog("[알림] 유닛 회전됨: " + currentRotation + "도");
         }
 
+        // [배치 버그 수정 핵심] 회전 시 발생하는 음수 좌표를 보정하여 무조건 박히게 함
         function getRotatedCells(type, pivotIdx, rotation) {
             let shape = UNIT_SHAPES[type];
             let px = pivotIdx % 20, py = Math.floor(pivotIdx / 20);
-            return shape.map(([dx, dy]) => {
+
+            // 1. 회전된 좌표들을 먼저 계산
+            let rotatedOffsets = shape.map(([dx, dy]) => {
                 let rx = dx, ry = dy;
                 for(let r=0; r < rotation/90; r++) {
                     let tx = -ry; let ty = rx;
                     rx = tx; ry = ty;
                 }
-                let fx = px + rx, fy = py + ry;
+                return [rx, ry];
+            });
+
+            // 2. 음수 좌표가 발생하지 않도록 최소값을 찾아 보정 (Normalization)
+            let minX = Math.min(...rotatedOffsets.map(o => o[0]));
+            let minY = Math.min(...rotatedOffsets.map(o => o[1]));
+
+            // 3. 보정된 좌표를 실제 격자에 투영
+            return rotatedOffsets.map(([rx, ry]) => {
+                let fx = px + (rx - minX), fy = py + (ry - minY);
                 if(fx < 0 || fx >= 20 || fy < 0 || fy >= 10) return -1;
                 return fy * 20 + fx;
             });
         }
 
         function placeOrPickUnit(idx) {
-            // [디버그] 클릭 시 로그 출력
             if(gameStatus !== 'PLACING' && gameStatus !== 'MOVING') {
                 addGameLog("[차단] 지금은 배치 단계가 아님 (상태: " + gameStatus + ")");
                 return;
             }
 
-            // 수거 로직
             const unitIdx = myUnits.findIndex(u => u.cells.includes(idx));
             if (unitIdx !== -1) {
                 const unit = myUnits[unitIdx];
@@ -184,23 +191,24 @@
                 return;
             }
 
-            // 배치 로직
             if(!selectedUnitType) {
-                addGameLog("[알림] 먼저 배치할 유닛 모양을 선택하세요!");
+                addGameLog("[알림] 먼저 유닛 모양을 선택하세요!");
                 return;
             }
-            if(inventory[selectedUnitType] <= 0) return;
 
             const cells = getRotatedCells(selectedUnitType, idx, currentRotation);
             if(cells.includes(-1) || cells.some(c => myUnits.some(u => u.cells.includes(c)))) {
-                addGameLog("[차단] 다른 유닛과 겹치거나 격자 밖입니다.");
+                addGameLog("[차단] 격자 밖이거나 겹칩니다.");
                 return;
             }
 
             myUnits.push({ type: selectedUnitType, cells: cells, isHit: false });
             inventory[selectedUnitType]--;
-            selectedUnitType = null;
+            // [UX 개선] 연속 배치를 위해 재고가 있을 땐 선택 해제 안 함
+            if(inventory[selectedUnitType] <= 0) selectedUnitType = null;
+            
             renderInventory(); renderMyGrid();
+            addGameLog("[성공] 유닛 배치 완료");
         }
 
         function renderMyGrid() {
@@ -248,7 +256,7 @@
             myUnits.forEach(u => { if(!u.isHit) inventory[u.type]++; });
             myUnits = myUnits.filter(u => u.isHit);
             renderInventory(); renderMyGrid();
-            addGameLog("[알림] 배치가 초기화되었습니다.");
+            addGameLog("[알림] 배치 초기화");
         }
 
         function handleButtonClick() {
@@ -261,7 +269,7 @@
                 socket.emit('toggleReady');
             } else if (gameStatus === "PLACING" || gameStatus === "MOVING") {
                 if (Object.values(inventory).some(v => v > 0)) return alert("모든 유닛을 배치해야 합니다!");
-                btn.disabled = true; btn.innerText = "상대방 대기 중...";
+                btn.disabled = true; btn.innerText = "상대 대기 중...";
                 socket.emit('finishPlacing', myUnits);
             } else if (gameStatus === "ENDED") {
                 socket.emit('requestRematch');
@@ -298,7 +306,7 @@
             gameStatus = "PLACING";
             const btn = document.getElementById('start-btn');
             btn.innerText = "배치 확정"; btn.style.background = "#2ecc71"; btn.disabled = false;
-            addGameLog("[시스템] 배치 단계 시작! 하단 격자에 유닛을 놓으세요.");
+            addGameLog("[시스템] 배치 시작! 하단 격자에 유닛을 놓으세요.");
         });
 
         socket.on('startMoving', () => {
@@ -311,13 +319,14 @@
         socket.on('gameStart', data => {
             gameStatus = "PLAYING";
             updateTurn(data.turn);
+            addGameLog("[시스템] 전투 시작! 상대 격자를 눌러 공격하세요.");
         });
 
         socket.on('attackResult', data => {
             const grid = (data.attacker === socket.id) ? document.getElementById('opponent-grid') : document.getElementById('my-grid');
             grid.children[data.index].classList.add(data.hit ? 'hit-unit' : 'miss-cell');
             if(!data.hit) updateTurn(data.nextTurn);
-            addGameLog(`${data.attacker === socket.id ? '내' : '상대'} 공격: ${data.index}번 -> ${data.hit ? "적중!" : "불발"}`);
+            addGameLog(`${data.attacker === socket.id ? '내' : '상대'} 공격: ${data.index}번 -> ${data.hit ? "🔥 적중!" : "💨 불발"}`);
         });
 
         function updateTurn(turnId) {
@@ -334,7 +343,7 @@
         });
 
         socket.on('rematchStarted', () => { location.reload(); });
-        socket.on('systemMsg', msg => addGameLog(msg));
+        socket.on('systemMsg', msg => addGameLog("[시스템] " + msg));
         socket.on('receiveChat', d => {
             const l = document.getElementById('chat-log');
             l.innerHTML += `<div><strong>${d.name}:</strong> ${d.msg}</div>`;
