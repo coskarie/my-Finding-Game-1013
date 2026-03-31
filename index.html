@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>블록 찾기 온라인</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; margin: 0; background: #f0f0f0; }
+        #login-screen { position: fixed; inset: 0; background: white; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; }
+        #main-game { display: none; flex: 1; padding: 20px; gap: 20px; }
+        
+        /* 레이아웃 */
+        .left-panel { flex: 2; display: flex; flex-direction: column; gap: 10px; }
+        .right-panel { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+        
+        .grid { width: 100%; height: 200px; background: white; border: 2px solid #333; display: grid; grid-template-columns: repeat(20, 1fr); }
+        .grid div { border: 1px solid #ddd; }
+        
+        .log-area, .chat-area { flex: 1; background: white; border: 1px solid #ccc; overflow-y: auto; padding: 10px; font-size: 0.9em; }
+        .chat-input-group { display: flex; }
+        
+        .user-list { background: #eee; padding: 10px; border-radius: 5px; }
+        .btn-group { display: flex; gap: 5px; margin-top: 10px; }
+        button { cursor: pointer; padding: 8px; }
+    </style>
+</head>
+<body>
+
+    <div id="login-screen">
+        <h1>블록 찾기</h1>
+        <input type="text" id="name-input" placeholder="이름 입력">
+        <input type="number" id="room-input" placeholder="방 번호 (1~99)" min="1" max="99">
+        <button onclick="joinGame()">입장하기</button>
+    </div>
+
+    <div id="main-game">
+        <div class="left-panel">
+            <h3>상대방 진영</h3>
+            <div id="opponent-grid" class="grid"></div>
+            
+            <div style="text-align: center;">
+                <button id="start-btn" style="padding: 15px 30px; font-weight: bold;">준비 대기 중</button>
+            </div>
+            
+            <h3>나의 진영</h3>
+            <div id="my-grid" class="grid"></div>
+        </div>
+
+        <div class="right-panel">
+            <h4>게임 로그</h4>
+            <div id="game-log" class="log-area"></div>
+            
+            <h4>실시간 채팅</h4>
+            <div id="chat-log" class="chat-area"></div>
+            <div class="chat-input-group">
+                <input type="text" id="chat-input" style="flex:1" onkeypress="if(event.keyCode==13) sendChat()">
+                <button onclick="sendChat()">전송</button>
+            </div>
+
+            <div class="user-list">
+                <strong>접속자 목록</strong>
+                <div id="player-list">플레이어: </div>
+                <div id="spectator-list">관전자: </div>
+                <div class="btn-group">
+                    <button onclick="changeRole('player')">플레이어로 가기</button>
+                    <button onclick="changeRole('spectator')">관전자로 가기</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let myName = "";
+        let myRoom = "";
+
+        function joinGame() {
+            myName = document.getElementById('name-input').value;
+            myRoom = document.getElementById('room-input').value;
+            if(!myName || !myRoom) return alert("이름과 방 번호를 입력하세요!");
+            
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('main-game').style.display = 'flex';
+            
+            socket.emit('joinRoom', { roomCode: myRoom, name: myName });
+            initGrids();
+        }
+
+        function initGrids() {
+            const oppGrid = document.getElementById('opponent-grid');
+            const myGrid = document.getElementById('my-grid');
+            for(let i=0; i<200; i++) {
+                oppGrid.appendChild(document.createElement('div'));
+                myGrid.appendChild(document.createElement('div'));
+            }
+        }
+
+        function changeRole(role) { socket.emit('changeRole', role); }
+
+        function sendChat() {
+            const input = document.getElementById('chat-input');
+            if(!input.value) return;
+            socket.emit('sendChat', input.value);
+            input.value = "";
+        }
+
+        socket.on('receiveChat', data => {
+            const log = document.getElementById('chat-log');
+            log.innerHTML += `<div><strong>${data.name}:</strong> ${data.msg}</div>`;
+            log.scrollTop = log.scrollHeight;
+        });
+
+        socket.on('roomData', data => {
+            document.getElementById('player-list').innerText = "플레이어: " + data.players.map(p => p.name).join(', ');
+            document.getElementById('spectator-list').innerText = "관전자: " + data.spectators.map(s => s.name).join(', ');
+        });
+
+        socket.on('systemMsg', msg => {
+            const log = document.getElementById('game-log');
+            log.innerHTML += `<div style="color: blue;">[시스템] ${msg}</div>`;
+        });
+    </script>
+</body>
+</html>
