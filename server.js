@@ -49,7 +49,8 @@ io.on('connection', (socket) => {
 
         if (role === 'player') {
             if (room.players.length < 2) {
-                room.players.push({ id: socket.id, name: userName, isReady: false, blocks: [], foundBlocks: [], placed: false });
+                // units: 유닛 덩어리 정보를 담는 배열
+                room.players.push({ id: socket.id, name: userName, isReady: false, units: [], placed: false });
             } else {
                 socket.emit('systemMsg', '플레이어 자리가 꽉 찼습니다.');
                 room.spectators.push({ id: socket.id, name: userName });
@@ -84,46 +85,63 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 5. 배치 완료 로직
-    socket.on('finishPlacing', (blocks) => {
+    // 5. 배치 및 전술 기동 확정 로직 (유닛 데이터 처리)
+    socket.on('finishPlacing', (units) => {
         const room = rooms[currentRoom];
         if (!room) return;
         const player = room.players.find(p => p.id === socket.id);
         if (player) {
-            player.blocks = blocks; 
+            player.units = units; // 유닛(타입, 좌표들, 피격여부) 객체 배열 저장
             player.placed = true;
         }
 
+        // 두 명 다 배치를 마쳤을 때
         if (room.players.length === 2 && room.players.every(p => p.placed)) {
+            const prevState = room.gameState;
             room.gameState = 'PLAYING';
-            const turnIndex = Math.floor(Math.random() * 2);
-            room.turn = room.players[turnIndex].id;
-            
-            io.to(currentRoom).emit('gameStart', {
-                turn: room.turn,
-                turnName: room.players[turnIndex].name
-            });
-            io.to(currentRoom).emit('systemMsg', `전투 시작! 선공은 ${room.players[turnIndex].name}님입니다.`);
+            room.players.forEach(p => p.placed = false); // 다음 기동을 위해 리셋
+
+            if (prevState === 'PLACING') {
+                const turnIndex = Math.floor(Math.random() * 2);
+                room.turn = room.players[turnIndex].id;
+                io.to(currentRoom).emit('gameStart', { turn: room.turn });
+                io.to(currentRoom).emit('systemMsg', "전투 시작!");
+            } else {
+                // 기동 단계(MOVING)에서 돌아온 경우
+                io.to(currentRoom).emit('gameStart', { turn: room.turn });
+                io.to(currentRoom).emit('systemMsg', "전술 기동 완료! 전투를 재개합니다.");
+            }
         } else {
-            io.to(currentRoom).emit('systemMsg', `${userName}님이 배치를 마쳤습니다.`);
+            socket.emit('systemMsg', "상대방의 작전 완료를 기다리는 중입니다...");
         }
     });
 
-    // 6. 공격 로직
+    // 6. 공격 로직 (유닛 판정 추가)
     socket.on('attack', (index) => {
         const room = rooms[currentRoom];
         if (!room || room.gameState !== 'PLAYING' || room.turn !== socket.id) return;
 
         const opponent = room.players.find(p => p.id !== socket.id);
-        const hit = opponent.blocks.includes(index);
+        let hitUnit = null;
 
-        if (hit) {
-            if (!opponent.foundBlocks.includes(index)) {
-                opponent.foundBlocks.push(index);
+        // 상대방 유닛들 중 해당 좌표를 포함하는 유닛 탐색
+        opponent.units.forEach(unit => {
+            if (unit.cells.includes(index)) {
+                if (!unit.hitCells) unit.hitCells = [];
+                if (!unit.hitCells.includes(index)) {
+                    unit.hitCells.push(index);
+                    unit.isHit = true; // 유닛 일부가 맞으면 해당 유닛은 '이동 불가' 상태가 됨
+                }
+                hitUnit = unit;
             }
+        });
+
+        if (hitUnit) {
             io.to(currentRoom).emit('attackResult', { attacker: socket.id, index, hit: true });
             
-            if (opponent.foundBlocks.length === opponent.blocks.length) {
+            // 모든 유닛의 모든 칸이 파괴되었는지 검사
+            const allDestroyed = opponent.units.every(u => u.cells.length === (u.hitCells ? u.hitCells.length : 0));
+            if (allDestroyed) {
                 room.gameState = 'ENDED';
                 io.to(currentRoom).emit('gameOver', { winner: userName });
             }
@@ -132,52 +150,33 @@ io.on('connection', (socket) => {
             room.phraseCount++;
             io.to(currentRoom).emit('attackResult', { attacker: socket.id, index, hit: false, nextTurn: room.turn });
 
-            // 5프레이즈 도달 시 이동 및 내 화면 갱신 데이터 전송
+            // 5프레이즈 도달 시 전술 기동 단계로 전환
             if (room.phraseCount > 0 && room.phraseCount % 5 === 0) {
-                moveUnfoundBlocks(room);
-                io.to(currentRoom).emit('systemMsg', "⚠️ 5프레이즈 도달! 발견되지 않은 블록들이 이동했습니다!");
-                
-                // [추가] 플레이어 각자에게 이동된 "자신의" 블록 위치를 알려줌
-                room.players.forEach(player => {
-                    io.to(player.id).emit('updateMyBlocks', player.blocks);
-                });
+                room.gameState = 'MOVING';
+                io.to(currentRoom).emit('startMoving');
+                io.to(currentRoom).emit('systemMsg', "⚠️ 5프레이즈 도달! 전술 기동 단계입니다. 피격되지 않은 유닛을 재배치하세요.");
             }
         }
     });
 
-    // 7. [신규] 다시하기 (방 초기화) 로직
+    // 7. 다시하기 로직 (원본 유지)
     socket.on('requestRematch', () => {
         const room = rooms[currentRoom];
         if (!room || room.gameState !== 'ENDED') return;
 
-        // 방 데이터 초기화
         room.gameState = 'LOBBY';
         room.phraseCount = 0;
+        room.turn = null;
         room.players.forEach(p => {
             p.isReady = false;
-            p.blocks = [];
-            p.foundBlocks = [];
+            p.units = [];
             p.placed = false;
         });
 
-        io.to(currentRoom).emit('rematchStarted'); // 클라이언트에 초기화 신호 전송
+        io.to(currentRoom).emit('rematchStarted');
         updateRoomInfo(currentRoom);
         io.to(currentRoom).emit('systemMsg', "방이 초기화되었습니다. 다시 준비해주세요!");
     });
-
-    // 블록 이동 함수
-    function moveUnfoundBlocks(room) {
-        room.players.forEach(player => {
-            player.blocks = player.blocks.map(blockIdx => {
-                if (player.foundBlocks.includes(blockIdx)) return blockIdx;
-                const directions = [-1, 1, -20, 20];
-                const randomDir = directions[Math.floor(Math.random() * directions.length)];
-                const nextIdx = blockIdx + randomDir;
-                if (nextIdx >= 0 && nextIdx < 200) return nextIdx;
-                return blockIdx;
-            });
-        });
-    }
 
     socket.on('sendChat', (msg) => {
         if (currentRoom) {
@@ -199,4 +198,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Tactical Server running on port ${PORT}`));
